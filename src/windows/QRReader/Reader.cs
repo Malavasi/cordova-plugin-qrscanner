@@ -11,15 +11,14 @@
 namespace QRReader
 {
     using System;
-    using System.Runtime.InteropServices;
     using System.Threading;
     using System.Threading.Tasks;
 
     using Windows.Foundation;
     using Windows.Graphics.Imaging;
-    using Windows.Media;
     using Windows.Media.Capture;
     using Windows.Media.MediaProperties;
+    using Windows.Storage.Streams;
 
     using ZXing;
     public sealed class Reader
@@ -28,12 +27,12 @@ namespace QRReader
         private CancellationTokenSource cancelSearch;
         private MediaCapture capture;
         private ImageEncodingProperties encodingProps;
+        private InMemoryRandomAccessStream imageStream;
 
         public Reader()
         {
             encodingProps = ImageEncodingProperties.CreateJpeg();
-            barcodeReader = new BarcodeReader
-            {
+            barcodeReader = new BarcodeReader {
                 Options = {
                     PossibleFormats = new BarcodeFormat[] { BarcodeFormat.QR_CODE },
                     TryHarder = true
@@ -71,7 +70,7 @@ namespace QRReader
 
             return result;
         }
-
+        
         private async Task<Result> GetCameraImage(CancellationToken cancelToken)
         {
             if (cancelToken.IsCancellationRequested)
@@ -79,17 +78,29 @@ namespace QRReader
                 throw new OperationCanceledException(cancelToken);
             }
 
-            var previewProperties = this.capture.VideoDeviceController.GetMediaStreamProperties(MediaStreamType.VideoPreview) as VideoEncodingProperties;
+            imageStream = new InMemoryRandomAccessStream();
 
-            var videoFrameConfig = new VideoFrame(BitmapPixelFormat.Bgra8, (int)previewProperties.Width, (int)previewProperties.Height);
+            await capture.CapturePhotoToStreamAsync(encodingProps, imageStream);
+            await imageStream.FlushAsync();
 
-            var videoFrame = await capture.GetPreviewFrameAsync(videoFrameConfig);
-            
-            
+            var decoder = await BitmapDecoder.CreateAsync(imageStream);
+
+            byte[] pixels =
+                (await
+                    decoder.GetPixelDataAsync(BitmapPixelFormat.Rgba8,
+                        BitmapAlphaMode.Ignore,
+                        new BitmapTransform(),
+                        ExifOrientationMode.IgnoreExifOrientation,
+                        ColorManagementMode.DoNotColorManage)).DetachPixelData();
+
+            const BitmapFormat format = BitmapFormat.RGB32;
+
+            imageStream.Dispose();
+
             var result =
                 await
                     Task.Run(
-                        () => barcodeReader.Decode(videoFrame.SoftwareBitmap),
+                        () => barcodeReader.Decode(pixels, (int) decoder.PixelWidth, (int) decoder.PixelHeight, format),
                         cancelToken);
 
             return result;
